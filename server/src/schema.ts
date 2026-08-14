@@ -420,6 +420,89 @@ export const removeVariableBindingInput = z.object({
   fileKey: fileKeyField,
 });
 
+/* ── Styles ────────────────────────────────────────────────────────────── */
+
+const createStyleIdSchema = () =>
+  z
+    .string()
+    .min(1)
+    .describe("Style ID as returned by get_styles (e.g. 'S:abc123,')");
+
+export const createPaintStyleShape = z.object({
+  name: z.string().min(1).describe("Style name, e.g. 'brand/teal-600'"),
+  hex: createHexColorSchema()
+    .optional()
+    .describe("Solid colour as hex. Required unless variableId is given."),
+  opacity: z
+    .number()
+    .min(0)
+    .max(1)
+    .optional()
+    .describe("Optional paint opacity from 0 to 1 (default 1)"),
+  variableId: createVariableIdSchema()
+    .optional()
+    .describe(
+      "Optional COLOR variable to bind the paint to instead of a raw hex. When set, hex is only the fallback value."
+    ),
+  fileKey: fileKeyField,
+});
+
+/**
+ * `create_paint_style` advertises hex and variableId as independently
+ * optional, but at least one has to be present. The refinement cannot ride on
+ * the advertised shape, so it lives on the parsed input — same split as
+ * createShapeShape/createShapeInput.
+ */
+export const createPaintStyleInput = createPaintStyleShape.refine(
+  (input) => input.hex !== undefined || input.variableId !== undefined,
+  { message: "either hex or variableId is required" }
+);
+
+export const createTextStyleInput = z.object({
+  name: z.string().min(1).describe("Style name, e.g. 'typography/heading-l'"),
+  fontFamily: z.string().min(1).describe("Font family, e.g. 'Inter'"),
+  fontStyle: z
+    .string()
+    .min(1)
+    .optional()
+    .describe("Font style, defaults to Regular"),
+  fontSize: z.number().positive().describe("Font size in pixels"),
+  lineHeight: z
+    .union([
+      z.number(),
+      z.object({
+        value: z.number(),
+        unit: z.enum(["PIXELS", "PERCENT"]),
+      }),
+      z.literal("AUTO"),
+    ])
+    .optional()
+    .describe("Line height: a number (pixels), {value, unit}, or 'AUTO'"),
+  letterSpacing: z
+    .union([
+      z.number(),
+      z.object({
+        value: z.number(),
+        unit: z.enum(["PIXELS", "PERCENT"]),
+      }),
+    ])
+    .optional()
+    .describe("Letter spacing: a number (pixels) or {value, unit}"),
+  fileKey: fileKeyField,
+});
+
+export const renameStyleInput = z.object({
+  styleId: createStyleIdSchema(),
+  name: z.string().min(1).describe("New style name"),
+  fileKey: fileKeyField,
+});
+
+export const deleteStyleInput = z.object({
+  styleId: createStyleIdSchema(),
+  confirm: z.boolean().describe("Must be true to confirm deletion"),
+  fileKey: fileKeyField,
+});
+
 const blendMode = z.enum([
   "PASS_THROUGH",
   "NORMAL",
@@ -981,9 +1064,13 @@ export const toolInputSchemas = {
 
   remove_variable_binding: removeVariableBindingInput,
 
+  create_paint_style: createPaintStyleShape,
 
+  create_text_style: createTextStyleInput,
 
+  rename_style: renameStyleInput,
 
+  delete_style: deleteStyleInput,
 
   set_effects: setEffectsInput,
 
@@ -1240,6 +1327,10 @@ const rpcToArgs: Record<
     ...params,
     nodeId: nodeIds?.[0],
   }),
+  create_paint_style: (_nodeIds, params) => ({ ...params }),
+  create_text_style: (_nodeIds, params) => ({ ...params }),
+  rename_style: (_nodeIds, params) => ({ ...params }),
+  delete_style: (_nodeIds, params) => ({ ...params }),
   set_effects: (nodeIds, params) => ({ ...params, nodeId: nodeIds?.[0] }),
   set_stroke_properties: (nodeIds, params) => ({
     ...params,

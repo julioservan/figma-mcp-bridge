@@ -112,6 +112,10 @@ If you want to know more about how it works, read the [How it works](#how-it-wor
 | `set_variable_bindings` | Bind variables to node properties so nodes follow the token |
 | `get_variable_bindings` | Read every variable bound to a node, resolved to names |
 | `remove_variable_binding` | Unbind a variable from a node property |
+| `create_paint_style` | Create a local paint style, optionally bound to a COLOR variable |
+| `create_text_style` | Create a local text style |
+| `rename_style` | Rename a local style (slashes re-group it) |
+| `delete_style` | Delete a local style with explicit confirmation |
 
 All tools accept an optional `fileKey` parameter when multiple Figma files are connected. Use `list_files` to discover connected files and their keys.
 
@@ -119,8 +123,8 @@ All tools accept an optional `fileKey` parameter when multiple Figma files are c
 
 - Edit tools work only when the plugin is opened in Figma's design editor (Dev Mode is read-only — they will return a clear error there).
 - The current user must have permission to edit the target file.
-- `delete_nodes` and `delete_variable_mode` are intentionally gated behind `confirm: true`.
-- Variable writes only touch **local** variables.
+- `delete_nodes`, `delete_style`, and `delete_variable_mode` are intentionally gated behind `confirm: true`.
+- Variable and style writes only touch **local** variables and styles. Styles that come from a library can be read but not renamed or deleted from the consuming file.
 - A variable's `resolvedType` is fixed at creation. COLOR values are passed as hex and are currently opaque — per-token alpha is not yet supported.
 - The number of modes a collection can hold is capped by the file's Figma plan (one mode on Starter). `create_variable_collection` rolls the collection back rather than leaving a partial one behind if it runs into that cap.
 - Text edits automatically load the fonts currently used by the target text node before applying the new content.
@@ -131,9 +135,9 @@ All tools accept an optional `fileKey` parameter when multiple Figma files are c
 
 With the current write surface, an agent can build a basic slide deck in a new empty Figma file: create slide frames, style titles and body copy, lay out rectangles/ellipses/lines for cards and dividers, duplicate slide templates, reparent content into the right frame, and adjust common geometry/visual properties — including solid/gradient paints, shadows and blurs, stroke geometry, and auto-layout configuration.
 
-It can also stand up a design system end to end: create a token collection with Light/Dark modes, populate primitive and semantic tokens, alias the semantic layer onto the primitives, and bind those tokens to the nodes of a component so its variants respond to a mode switch.
+It can also stand up a design system end to end: create a token collection with Light/Dark modes, populate primitive and semantic tokens, alias the semantic layer onto the primitives, bind those tokens to the nodes of a component so its variants respond to a mode switch, and publish the matching paint and text styles.
 
-The current version is intentionally limited — no components/instances, no style authoring, no per-segment text styling, and no vector boolean operations yet.
+The current version is intentionally limited — no components/instances, no per-segment text styling, and no vector boolean operations yet.
 
 ## Local development
 

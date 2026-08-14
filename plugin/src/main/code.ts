@@ -24,6 +24,10 @@ type RequestType =
   | "set_variable_bindings"
   | "get_variable_bindings"
   | "remove_variable_binding"
+  | "create_paint_style"
+  | "create_text_style"
+  | "rename_style"
+  | "delete_style"
   | "set_gradient_fill"
   | "set_effects"
   | "set_stroke_properties"
@@ -380,6 +384,23 @@ const applyVariableBinding = async (
   node.setBoundVariable(property as VariableBindableNodeField, variable);
 };
 
+/**
+ * getStyleByIdAsync also resolves library styles that this file merely *uses*.
+ * Those cannot be renamed or removed from here, so reject them with a clear
+ * message instead of letting Figma throw an opaque one.
+ */
+const getLocalStyleById = async (styleId: string): Promise<BaseStyle> => {
+  const style = await figma.getStyleByIdAsync(styleId);
+  if (!style) {
+    throw new Error(`Style not found: ${styleId}`);
+  }
+  if (style.remote) {
+    throw new Error(
+      `${style.name} is a library style; it can only be edited in its source file`
+    );
+  }
+  return style;
+};
 
 type GradientStopInput = { position: number; hex: string; opacity?: number };
 type GradientPaintType =
@@ -519,6 +540,10 @@ const EDIT_REQUEST_TYPES = new Set<RequestType>([
   "create_variable_alias",
   "set_variable_bindings",
   "remove_variable_binding",
+  "create_paint_style",
+  "create_text_style",
+  "rename_style",
+  "delete_style",
   "set_gradient_fill",
   "set_effects",
   "set_stroke_properties",
@@ -1514,6 +1539,141 @@ const handleRequest = async (
             property: params.property,
             unbound: true,
           },
+        };
+      }
+      case "create_paint_style": {
+        const params = request.params ?? {};
+        if (typeof params.name !== "string") {
+          throw new Error("name is required for create_paint_style");
+        }
+        if (
+          typeof params.hex !== "string" &&
+          typeof params.variableId !== "string"
+        ) {
+          throw new Error("either hex or variableId is required");
+        }
+
+        // Resolve and validate before createPaintStyle: everything that can
+        // fail has to fail while the document is still untouched, or a bad
+        // variableId leaves an empty orphan style behind on every retry.
+        const variable =
+          typeof params.variableId === "string"
+            ? await getVariable(params.variableId)
+            : null;
+        if (variable && variable.resolvedType !== "COLOR") {
+          throw new Error(
+            `${variable.name} is ${variable.resolvedType}; a paint style can only bind a COLOR variable`
+          );
+        }
+        const color =
+          typeof params.hex === "string"
+            ? parseHexColor(params.hex)
+            : { r: 0, g: 0, b: 0 };
+
+        let paint: SolidPaint = {
+          type: "SOLID",
+          color,
+          opacity: typeof params.opacity === "number" ? params.opacity : 1,
+        };
+        if (variable) {
+          paint = figma.variables.setBoundVariableForPaint(
+            paint,
+            "color",
+            variable
+          );
+        }
+
+        const style = figma.createPaintStyle();
+        style.name = params.name;
+        style.paints = [paint];
+
+        return {
+          type: request.type,
+          requestId: request.requestId,
+          data: { styleId: style.id, name: style.name },
+        };
+      }
+      case "create_text_style": {
+        const params = request.params ?? {};
+        if (
+          typeof params.name !== "string" ||
+          typeof params.fontFamily !== "string" ||
+          typeof params.fontSize !== "number"
+        ) {
+          throw new Error(
+            "name, fontFamily and fontSize are required for create_text_style"
+          );
+        }
+        const fontName: FontName = {
+          family: params.fontFamily,
+          style:
+            typeof params.fontStyle === "string" ? params.fontStyle : "Regular",
+        };
+
+        // Load before assigning: an unavailable family/style pair must fail
+        // here rather than leave a half-built style behind.
+        await figma.loadFontAsync(fontName);
+
+        const style = figma.createTextStyle();
+        style.name = params.name;
+        style.fontName = fontName;
+        style.fontSize = params.fontSize;
+
+        if (params.lineHeight !== undefined) {
+          if (params.lineHeight === "AUTO") {
+            style.lineHeight = { unit: "AUTO" };
+          } else if (typeof params.lineHeight === "number") {
+            style.lineHeight = { value: params.lineHeight, unit: "PIXELS" };
+          } else {
+            style.lineHeight = params.lineHeight as LineHeight;
+          }
+        }
+
+        if (params.letterSpacing !== undefined) {
+          style.letterSpacing =
+            typeof params.letterSpacing === "number"
+              ? { value: params.letterSpacing, unit: "PIXELS" }
+              : (params.letterSpacing as LetterSpacing);
+        }
+
+        return {
+          type: request.type,
+          requestId: request.requestId,
+          data: { styleId: style.id, name: style.name },
+        };
+      }
+      case "rename_style": {
+        const params = request.params ?? {};
+        if (
+          typeof params.styleId !== "string" ||
+          typeof params.name !== "string"
+        ) {
+          throw new Error("styleId and name are required for rename_style");
+        }
+        const style = await getLocalStyleById(params.styleId);
+        const previousName = style.name;
+        style.name = params.name;
+        return {
+          type: request.type,
+          requestId: request.requestId,
+          data: { styleId: style.id, previousName, name: style.name },
+        };
+      }
+      case "delete_style": {
+        const params = request.params ?? {};
+        if (typeof params.styleId !== "string") {
+          throw new Error("styleId is required for delete_style");
+        }
+        if (params.confirm !== true) {
+          throw new Error("delete_style requires confirm: true");
+        }
+        const style = await getLocalStyleById(params.styleId);
+        const name = style.name;
+        style.remove();
+        return {
+          type: request.type,
+          requestId: request.requestId,
+          data: { styleId: params.styleId, name, deleted: true },
         };
       }
       case "set_gradient_fill": {

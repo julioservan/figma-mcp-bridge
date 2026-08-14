@@ -11,6 +11,7 @@ import {
   createShapeShape,
   createTextShape,
   createShapeInput,
+  createPaintStyleInput,
   createTextInput,
   setNodePropertiesInput,
   setGradientFillInput,
@@ -469,6 +470,62 @@ export function registerTools(
           params,
           fileKey
         )
+      );
+    }
+  );
+
+  server.tool(
+    "create_paint_style",
+    "Create a local paint (colour) style. Pass a hex for a raw colour, or a variableId to bind the style's paint to a COLOR variable so the style tracks the token. When multiple files are connected, specify fileKey.",
+    toolInputSchemas.create_paint_style.shape,
+    async (args): Promise<ToolResult> => {
+      const parsed = parseToolInput(createPaintStyleInput, args);
+      if (!parsed.success) return parsed.error;
+      const { fileKey, ...params } = parsed.data;
+      return renderResponse(() =>
+        node.sendWithParams("create_paint_style", undefined, params, fileKey)
+      );
+    }
+  );
+
+  server.tool(
+    "create_text_style",
+    "Create a local text style. The font is loaded before the style is created, so an unavailable family/style pair fails with a clear error instead of leaving a half-built style. When multiple files are connected, specify fileKey.",
+    toolInputSchemas.create_text_style.shape,
+    async (args): Promise<ToolResult> => {
+      const parsed = parseToolInput(toolInputSchemas.create_text_style, args);
+      if (!parsed.success) return parsed.error;
+      const { fileKey, ...params } = parsed.data;
+      return renderResponse(() =>
+        node.sendWithParams("create_text_style", undefined, params, fileKey)
+      );
+    }
+  );
+
+  server.tool(
+    "rename_style",
+    "Rename an existing local style. Slashes create folder groups, so renaming 'Heading/Heading 1' to 'display/xl' also re-groups it. Library styles used by this file cannot be renamed from here. When multiple files are connected, specify fileKey.",
+    toolInputSchemas.rename_style.shape,
+    async (args): Promise<ToolResult> => {
+      const parsed = parseToolInput(toolInputSchemas.rename_style, args);
+      if (!parsed.success) return parsed.error;
+      const { fileKey, ...params } = parsed.data;
+      return renderResponse(() =>
+        node.sendWithParams("rename_style", undefined, params, fileKey)
+      );
+    }
+  );
+
+  server.tool(
+    "delete_style",
+    "Delete a local style. Gated behind confirm: true. Nodes using the style keep their current appearance but lose the style link. When multiple files are connected, specify fileKey.",
+    toolInputSchemas.delete_style.shape,
+    async (args): Promise<ToolResult> => {
+      const parsed = parseToolInput(toolInputSchemas.delete_style, args);
+      if (!parsed.success) return parsed.error;
+      const { fileKey, ...params } = parsed.data;
+      return renderResponse(() =>
+        node.sendWithParams("delete_style", undefined, params, fileKey)
       );
     }
   );
