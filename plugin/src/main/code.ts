@@ -15,6 +15,15 @@ type RequestType =
   | "set_node_properties"
   | "set_solid_fill"
   | "set_solid_fills"
+  | "create_variable_collection"
+  | "create_variable_mode"
+  | "rename_variable_mode"
+  | "delete_variable_mode"
+  | "create_variables"
+  | "create_variable_alias"
+  | "set_variable_bindings"
+  | "get_variable_bindings"
+  | "remove_variable_binding"
   | "set_gradient_fill"
   | "set_effects"
   | "set_stroke_properties"
@@ -222,11 +231,154 @@ const setSolidFill = (
   (node as GeometryMixin & { fills: ReadonlyArray<Paint> }).fills = [paint];
 };
 
+const getVariableCollection = async (
+  collectionId: string
+): Promise<VariableCollection> => {
+  const collection =
+    await figma.variables.getVariableCollectionByIdAsync(collectionId);
+  if (!collection) {
+    throw new Error(`Variable collection not found: ${collectionId}`);
+  }
+  return collection;
+};
 
+const getVariable = async (variableId: string): Promise<Variable> => {
+  const variable = await figma.variables.getVariableByIdAsync(variableId);
+  if (!variable) {
+    throw new Error(`Variable not found: ${variableId}`);
+  }
+  return variable;
+};
 
+/**
+ * Converts a wire value to the shape Figma expects for the variable's type.
+ * COLOR arrives as hex because that is what the rest of the bridge speaks.
+ */
+const toVariableValue = (
+  value: unknown,
+  resolvedType: VariableResolvedDataType
+): VariableValue => {
+  switch (resolvedType) {
+    case "COLOR": {
+      if (typeof value !== "string") {
+        throw new Error("COLOR values must be a hex string (e.g. '#14655C')");
+      }
+      const { r, g, b } = parseHexColor(value);
+      return { r, g, b, a: 1 };
+    }
+    case "FLOAT": {
+      if (typeof value !== "number") {
+        throw new Error("FLOAT values must be a number");
+      }
+      return value;
+    }
+    case "STRING": {
+      if (typeof value !== "string") {
+        throw new Error("STRING values must be a string");
+      }
+      return value;
+    }
+    case "BOOLEAN": {
+      if (typeof value !== "boolean") {
+        throw new Error("BOOLEAN values must be a boolean");
+      }
+      return value;
+    }
+    default:
+      throw new Error(`Unsupported variable type: ${String(resolvedType)}`);
+  }
+};
 
+/**
+ * Converts every mode value up front, before any document mutation. A bad hex
+ * has to fail *before* createVariable runs, otherwise the variable exists at
+ * its default value while the caller is told the operation failed — and the
+ * corrective retry then collides on the name it just took.
+ */
+const toVariableValuesByMode = (
+  values: unknown,
+  resolvedType: VariableResolvedDataType
+): Array<[string, VariableValue]> => {
+  if (values === undefined || values === null) return [];
+  if (typeof values !== "object") {
+    throw new Error("values must be an object keyed by modeId");
+  }
+  return Object.entries(values as Record<string, unknown>).map(
+    ([modeId, raw]) => [modeId, toVariableValue(raw, resolvedType)]
+  );
+};
 
+const applyVariableValues = (
+  variable: Variable,
+  values: Array<[string, VariableValue]>
+): void => {
+  for (const [modeId, value] of values) {
+    variable.setValueForMode(modeId, value);
+  }
+};
 
+/**
+ * Binds (or with `variable: null`, unbinds) a variable on a node property.
+ * Paint fields go through setBoundVariableForPaint, which returns a *new*
+ * paint — the array has to be reassigned for the change to stick. Everything
+ * else is a plain node field.
+ */
+const applyVariableBinding = async (
+  node: SceneNode,
+  property: string,
+  variable: Variable | null,
+  index?: number
+): Promise<void> => {
+  if (property === "fill" || property === "stroke") {
+    const key = property === "fill" ? "fills" : "strokes";
+    if (variable && variable.resolvedType !== "COLOR") {
+      throw new Error(
+        `${variable.name} is ${variable.resolvedType}; ${property} can only bind a COLOR variable`
+      );
+    }
+    if (!(key in node)) {
+      throw new Error(`Node does not support ${key}: ${node.id}`);
+    }
+    const current = (node as unknown as Record<string, unknown>)[key];
+    if (!Array.isArray(current)) {
+      throw new Error(
+        `Cannot bind ${property} on ${node.id}: paints are mixed or unset`
+      );
+    }
+    const paints = [...(current as Paint[])];
+    const target = index ?? 0;
+    const paint = paints[target];
+    if (!paint) {
+      throw new Error(`No paint at ${key}[${target}] on ${node.id}`);
+    }
+    if (paint.type !== "SOLID") {
+      throw new Error(
+        `${key}[${target}] on ${node.id} is ${paint.type}; only solid paints can bind a colour variable`
+      );
+    }
+    paints[target] = figma.variables.setBoundVariableForPaint(
+      paint,
+      "color",
+      variable
+    );
+    (node as unknown as Record<string, unknown>)[key] = paints;
+    return;
+  }
+
+  // Binding `characters` rewrites the text node's content, and Figma rejects
+  // any text write while the node's fonts are unloaded — same rule the
+  // set_text_content / set_text_properties handlers already follow.
+  if (property === "characters") {
+    if (node.type !== "TEXT") {
+      throw new Error(
+        `Cannot bind characters on ${node.id}: node is ${node.type}, not TEXT`
+      );
+    }
+    await loadFontsForTextNode(node);
+  }
+
+  node.setBoundVariable(property as VariableBindableNodeField, variable);
+};
 
 
 type GradientStopInput = { position: number; hex: string; opacity?: number };
@@ -359,6 +511,14 @@ const EDIT_REQUEST_TYPES = new Set<RequestType>([
   "set_node_properties",
   "set_solid_fill",
   "set_solid_fills",
+  "create_variable_collection",
+  "create_variable_mode",
+  "rename_variable_mode",
+  "delete_variable_mode",
+  "create_variables",
+  "create_variable_alias",
+  "set_variable_bindings",
+  "remove_variable_binding",
   "set_gradient_fill",
   "set_effects",
   "set_stroke_properties",
@@ -994,6 +1154,366 @@ const handleRequest = async (
           type: request.type,
           requestId: request.requestId,
           data: { results },
+        };
+      }
+      case "create_variable_collection": {
+        const params = request.params ?? {};
+        if (typeof params.name !== "string") {
+          throw new Error("name is required for create_variable_collection");
+        }
+        const requested = Array.isArray(params.modes)
+          ? (params.modes as unknown[]).filter(
+              (mode): mode is string => typeof mode === "string"
+            )
+          : [];
+
+        const collection = figma.variables.createVariableCollection(
+          params.name
+        );
+        try {
+          // Figma always creates one mode. Rename it to the caller's first name
+          // and add the rest, so `modes` describes the final state exactly.
+          if (requested.length > 0) {
+            collection.renameMode(collection.modes[0].modeId, requested[0]);
+            for (const name of requested.slice(1)) {
+              collection.addMode(name);
+            }
+          }
+        } catch (error) {
+          // addMode throws once the file's plan runs out of modes (Starter
+          // allows one). Roll back rather than leave a half-built collection
+          // behind that the caller has to clean up before retrying.
+          collection.remove();
+          throw new Error(
+            `Could not create all ${requested.length} modes, so the collection was rolled back: ${
+              error instanceof Error ? error.message : String(error)
+            }`
+          );
+        }
+
+        return {
+          type: request.type,
+          requestId: request.requestId,
+          data: {
+            collectionId: collection.id,
+            name: collection.name,
+            modes: collection.modes.map((mode) => ({
+              modeId: mode.modeId,
+              name: mode.name,
+            })),
+          },
+        };
+      }
+      case "create_variable_mode": {
+        const params = request.params ?? {};
+        if (
+          typeof params.collectionId !== "string" ||
+          typeof params.name !== "string"
+        ) {
+          throw new Error(
+            "collectionId and name are required for create_variable_mode"
+          );
+        }
+        const collection = await getVariableCollection(params.collectionId);
+        const modeId = collection.addMode(params.name);
+        return {
+          type: request.type,
+          requestId: request.requestId,
+          data: { modeId, name: params.name, collectionId: collection.id },
+        };
+      }
+      case "rename_variable_mode": {
+        const params = request.params ?? {};
+        if (
+          typeof params.collectionId !== "string" ||
+          typeof params.modeId !== "string" ||
+          typeof params.name !== "string"
+        ) {
+          throw new Error(
+            "collectionId, modeId and name are required for rename_variable_mode"
+          );
+        }
+        const collection = await getVariableCollection(params.collectionId);
+        collection.renameMode(params.modeId, params.name);
+        return {
+          type: request.type,
+          requestId: request.requestId,
+          data: {
+            collectionId: collection.id,
+            modeId: params.modeId,
+            name: params.name,
+          },
+        };
+      }
+      case "delete_variable_mode": {
+        const params = request.params ?? {};
+        if (
+          typeof params.collectionId !== "string" ||
+          typeof params.modeId !== "string"
+        ) {
+          throw new Error(
+            "collectionId and modeId are required for delete_variable_mode"
+          );
+        }
+        if (params.confirm !== true) {
+          throw new Error("delete_variable_mode requires confirm: true");
+        }
+        const collection = await getVariableCollection(params.collectionId);
+        const mode = collection.modes.find(
+          (candidate) => candidate.modeId === params.modeId
+        );
+        if (!mode) {
+          throw new Error(
+            `Mode not found in ${collection.name}: ${params.modeId}`
+          );
+        }
+        // Figma rejects removing the last mode; say so before it throws, since
+        // the caller's next move differs (delete the collection instead).
+        if (collection.modes.length <= 1) {
+          throw new Error(
+            `${collection.name} has only one mode; a collection must keep at least one`
+          );
+        }
+        collection.removeMode(params.modeId);
+        return {
+          type: request.type,
+          requestId: request.requestId,
+          data: {
+            collectionId: collection.id,
+            modeId: params.modeId,
+            name: mode.name,
+            deleted: true,
+          },
+        };
+      }
+      case "create_variables": {
+        const params = request.params ?? {};
+        if (typeof params.collectionId !== "string") {
+          throw new Error("collectionId is required for create_variables");
+        }
+        const rawItems = params.items;
+        if (!Array.isArray(rawItems) || rawItems.length === 0) {
+          throw new Error("items is required for create_variables");
+        }
+        const items = rawItems as Array<Record<string, unknown>>;
+        const collection = await getVariableCollection(params.collectionId);
+
+        const results: Array<
+          | {
+              name: string;
+              variableId: string;
+              resolvedType: VariableResolvedDataType;
+            }
+          | { name: string | null; error: string }
+        > = [];
+        for (const item of items) {
+          const name = typeof item.name === "string" ? item.name : null;
+          try {
+            if (!name) {
+              throw new Error("name is required");
+            }
+            const resolvedType = item.resolvedType as VariableResolvedDataType;
+            // Convert every value before creating anything: a bad hex must not
+            // leave a variable sitting at its default while the caller is told
+            // the entry failed — the corrected retry would then collide on the
+            // name it just took.
+            const values = toVariableValuesByMode(item.values, resolvedType);
+            const variable = figma.variables.createVariable(
+              name,
+              collection,
+              resolvedType
+            );
+            applyVariableValues(variable, values);
+            results.push({
+              name: variable.name,
+              variableId: variable.id,
+              resolvedType: variable.resolvedType,
+            });
+          } catch (error) {
+            results.push({
+              name,
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
+        }
+
+        return {
+          type: request.type,
+          requestId: request.requestId,
+          data: { collectionId: collection.id, results },
+        };
+      }
+      case "create_variable_alias": {
+        const params = request.params ?? {};
+        if (
+          typeof params.variableId !== "string" ||
+          typeof params.modeId !== "string" ||
+          typeof params.aliasVariableId !== "string"
+        ) {
+          throw new Error(
+            "variableId, modeId and aliasVariableId are required for create_variable_alias"
+          );
+        }
+        const [variable, target] = await Promise.all([
+          getVariable(params.variableId),
+          getVariable(params.aliasVariableId),
+        ]);
+        if (variable.resolvedType !== target.resolvedType) {
+          throw new Error(
+            `Type mismatch: ${variable.name} is ${variable.resolvedType} but ${target.name} is ${target.resolvedType}`
+          );
+        }
+        variable.setValueForMode(
+          params.modeId,
+          figma.variables.createVariableAlias(target)
+        );
+        return {
+          type: request.type,
+          requestId: request.requestId,
+          data: {
+            variableId: variable.id,
+            modeId: params.modeId,
+            aliasOf: { variableId: target.id, name: target.name },
+          },
+        };
+      }
+      case "set_variable_bindings": {
+        const rawItems = request.params?.items;
+        if (!Array.isArray(rawItems) || rawItems.length === 0) {
+          throw new Error("items is required for set_variable_bindings");
+        }
+        const items = rawItems as Array<Record<string, unknown>>;
+        const results: Array<
+          | {
+              nodeId: string;
+              nodeName: string;
+              property: string;
+              variableId: string;
+              variableName: string;
+            }
+          | { nodeId: string | null; error: string }
+        > = [];
+        for (const item of items) {
+          const nodeId = typeof item.nodeId === "string" ? item.nodeId : null;
+          try {
+            if (!nodeId) {
+              throw new Error("nodeId is required");
+            }
+            if (
+              typeof item.property !== "string" ||
+              typeof item.variableId !== "string"
+            ) {
+              throw new Error("property and variableId are required");
+            }
+            const node = await getSceneNodeById(nodeId);
+            const variable = await getVariable(item.variableId);
+            await applyVariableBinding(
+              node,
+              item.property,
+              variable,
+              typeof item.index === "number" ? item.index : undefined
+            );
+            results.push({
+              nodeId,
+              nodeName: node.name,
+              property: item.property,
+              variableId: variable.id,
+              variableName: variable.name,
+            });
+          } catch (error) {
+            results.push({
+              nodeId,
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
+        }
+
+        return {
+          type: request.type,
+          requestId: request.requestId,
+          data: { results },
+        };
+      }
+      case "get_variable_bindings": {
+        const nodeId = request.nodeIds && request.nodeIds[0];
+        if (!nodeId) {
+          throw new Error("nodeIds is required for get_variable_bindings");
+        }
+        const node = await getSceneNodeById(nodeId);
+        const bound = node.boundVariables ?? {};
+
+        // boundVariables is a grab-bag: array fields (fills, strokes) hold a
+        // list of aliases, scalar fields hold a single alias, and
+        // componentProperties is a record keyed by property name. Resolve all
+        // three to names so the caller can audit without a second round-trip.
+        const resolveAlias = async (alias: VariableAlias) => {
+          const variable = await figma.variables.getVariableByIdAsync(alias.id);
+          return {
+            variableId: alias.id,
+            variableName: variable ? variable.name : null,
+          };
+        };
+
+        const bindings: Record<string, unknown> = {};
+        for (const [field, value] of Object.entries(
+          bound as Record<string, unknown>
+        )) {
+          if (Array.isArray(value)) {
+            bindings[field] = await Promise.all(
+              value.map(async (alias, index) => ({
+                index,
+                ...(await resolveAlias(alias as VariableAlias)),
+              }))
+            );
+          } else if (value && typeof value === "object" && "id" in value) {
+            bindings[field] = await resolveAlias(value as VariableAlias);
+          } else if (value && typeof value === "object") {
+            // componentProperties: { [propertyName]: VariableAlias }
+            const entries: Record<string, unknown> = {};
+            for (const [property, alias] of Object.entries(
+              value as Record<string, unknown>
+            )) {
+              if (alias && typeof alias === "object" && "id" in alias) {
+                entries[property] = await resolveAlias(alias as VariableAlias);
+              }
+            }
+            if (Object.keys(entries).length > 0) {
+              bindings[field] = entries;
+            }
+          }
+        }
+
+        return {
+          type: request.type,
+          requestId: request.requestId,
+          data: { nodeId: node.id, nodeName: node.name, bindings },
+        };
+      }
+      case "remove_variable_binding": {
+        const nodeId = request.nodeIds && request.nodeIds[0];
+        if (!nodeId) {
+          throw new Error("nodeIds is required for remove_variable_binding");
+        }
+        const params = request.params ?? {};
+        if (typeof params.property !== "string") {
+          throw new Error("property is required for remove_variable_binding");
+        }
+        const node = await getSceneNodeById(nodeId);
+        await applyVariableBinding(
+          node,
+          params.property,
+          null,
+          typeof params.index === "number" ? params.index : undefined
+        );
+        return {
+          type: request.type,
+          requestId: request.requestId,
+          data: {
+            nodeId: node.id,
+            nodeName: node.name,
+            property: params.property,
+            unbound: true,
+          },
         };
       }
       case "set_gradient_fill": {

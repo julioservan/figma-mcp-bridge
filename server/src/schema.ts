@@ -220,6 +220,206 @@ export const setSolidFillsInput = z.object({
   fileKey: fileKeyField,
 });
 
+/* ── Variables ─────────────────────────────────────────────────────────── */
+
+// Factories rather than shared const schemas: reusing one ZodType instance
+// twice inside a single tool schema makes zod-to-json-schema emit a $ref,
+// which some MCP clients reject (see #30).
+const createVariableIdSchema = () =>
+  z
+    .string()
+    .min(1)
+    .describe(
+      "Variable ID as returned by get_variable_defs (e.g. 'VariableID:1:23')"
+    );
+
+const createCollectionIdSchema = () =>
+  z
+    .string()
+    .min(1)
+    .describe(
+      "Variable collection ID as returned by get_variable_defs (e.g. 'VariableCollectionId:1:2')"
+    );
+
+const createModeIdSchema = () =>
+  z
+    .string()
+    .min(1)
+    .describe(
+      "Mode ID within the collection, as returned by get_variable_defs"
+    );
+
+const createVariableResolvedTypeSchema = () =>
+  z
+    .enum(["COLOR", "FLOAT", "STRING", "BOOLEAN"])
+    .describe("The variable's resolved type — fixed at creation and immutable");
+
+/**
+ * A variable's value for one mode. The accepted JSON type follows
+ * `resolvedType`: hex string for COLOR, number for FLOAT, string for STRING,
+ * boolean for BOOLEAN. The plugin converts COLOR hex to Figma's RGBA floats.
+ */
+const createVariableValuesByModeSchema = () =>
+  z
+    .record(
+      createModeIdSchema(),
+      z
+        .union([z.string(), z.number(), z.boolean()])
+        .describe(
+          "Value for this mode: hex string for COLOR (e.g. '#14655C'), number for FLOAT, string for STRING, boolean for BOOLEAN"
+        )
+    )
+    .describe("Map of modeId to the value this variable takes in that mode");
+
+const createVariableNameSchema = () =>
+  z
+    .string()
+    .min(1)
+    .refine(
+      (value) => value.trim().length > 0,
+      "Variable name cannot be blank"
+    );
+
+export const createVariableCollectionInput = z.object({
+  name: z.string().min(1).describe("Collection name, e.g. 'semantic/theme'"),
+  modes: z
+    .array(z.string().min(1))
+    .optional()
+    .describe(
+      "Optional mode names. Figma always creates a first mode; supplying names renames it and adds the rest. Omit for a single default mode."
+    ),
+  fileKey: fileKeyField,
+});
+
+export const createVariableModeInput = z.object({
+  collectionId: createCollectionIdSchema(),
+  name: z.string().min(1).describe("Name for the new mode, e.g. 'Dark'"),
+  fileKey: fileKeyField,
+});
+
+export const renameVariableModeInput = z.object({
+  collectionId: createCollectionIdSchema(),
+  modeId: createModeIdSchema(),
+  name: z.string().min(1).describe("New name for the mode"),
+  fileKey: fileKeyField,
+});
+
+export const deleteVariableModeInput = z.object({
+  collectionId: createCollectionIdSchema(),
+  modeId: createModeIdSchema(),
+  confirm: z
+    .boolean()
+    .describe("Must be true to confirm removal of the mode and its values"),
+  fileKey: fileKeyField,
+});
+
+export const createVariablesInput = z.object({
+  collectionId: createCollectionIdSchema(),
+  items: z
+    .array(
+      z.object({
+        name: createVariableNameSchema().describe(
+          "Variable name, e.g. 'interactive/default'. Slashes create groups."
+        ),
+        resolvedType: createVariableResolvedTypeSchema(),
+        values: createVariableValuesByModeSchema()
+          .optional()
+          .describe("Optional initial values keyed by modeId"),
+      })
+    )
+    .min(1)
+    .describe("Variables to create in this collection, in a single round-trip"),
+  fileKey: fileKeyField,
+});
+
+export const createVariableAliasInput = z.object({
+  variableId: createVariableIdSchema().describe(
+    "The variable whose value is being set to an alias (the semantic token)"
+  ),
+  modeId: createModeIdSchema(),
+  aliasVariableId: createVariableIdSchema().describe(
+    "The variable being pointed at (the primitive token)"
+  ),
+  fileKey: fileKeyField,
+});
+
+/* ── Variable bindings ─────────────────────────────────────────────────── */
+
+/**
+ * `fill`/`stroke` bind the colour of a paint (index selects which paint in the
+ * array); every other value is a Figma `VariableBindableNodeField` set through
+ * `node.setBoundVariable`.
+ */
+const createBindablePropertySchema = () =>
+  z
+    .enum([
+      "fill",
+      "stroke",
+      "width",
+      "height",
+      "characters",
+      "itemSpacing",
+      "counterAxisSpacing",
+      "paddingLeft",
+      "paddingRight",
+      "paddingTop",
+      "paddingBottom",
+      "visible",
+      "opacity",
+      "cornerRadius",
+      "topLeftRadius",
+      "topRightRadius",
+      "bottomLeftRadius",
+      "bottomRightRadius",
+      "minWidth",
+      "maxWidth",
+      "minHeight",
+      "maxHeight",
+      "strokeWeight",
+      "strokeTopWeight",
+      "strokeRightWeight",
+      "strokeBottomWeight",
+      "strokeLeftWeight",
+    ])
+    .describe(
+      "Property to bind. 'fill'/'stroke' bind a paint's colour; the rest are numeric/boolean node fields."
+    );
+
+const createPaintIndexSchema = () =>
+  z
+    .number()
+    .int()
+    .min(0)
+    .optional()
+    .describe("Which paint to bind when property is fill/stroke (default 0)");
+
+export const setVariableBindingsInput = z.object({
+  items: z
+    .array(
+      z.object({
+        nodeId: createFigmaNodeIdSchema().describe("The node ID to bind on"),
+        property: createBindablePropertySchema(),
+        variableId: createVariableIdSchema(),
+        index: createPaintIndexSchema(),
+      })
+    )
+    .min(1)
+    .describe("Bindings to apply in a single round-trip"),
+  fileKey: fileKeyField,
+});
+
+export const getVariableBindingsInput = z.object({
+  nodeId: createFigmaNodeIdSchema().describe("The node ID to inspect"),
+  fileKey: fileKeyField,
+});
+
+export const removeVariableBindingInput = z.object({
+  nodeId: createFigmaNodeIdSchema().describe("The node ID to unbind on"),
+  property: createBindablePropertySchema(),
+  index: createPaintIndexSchema(),
+  fileKey: fileKeyField,
+});
+
 const blendMode = z.enum([
   "PASS_THROUGH",
   "NORMAL",
@@ -763,14 +963,23 @@ export const toolInputSchemas = {
 
   set_solid_fills: setSolidFillsInput,
 
+  create_variable_collection: createVariableCollectionInput,
 
+  create_variable_mode: createVariableModeInput,
 
+  rename_variable_mode: renameVariableModeInput,
 
+  delete_variable_mode: deleteVariableModeInput,
 
+  create_variables: createVariablesInput,
 
+  create_variable_alias: createVariableAliasInput,
 
+  set_variable_bindings: setVariableBindingsInput,
 
+  get_variable_bindings: getVariableBindingsInput,
 
+  remove_variable_binding: removeVariableBindingInput,
 
 
 
@@ -1016,6 +1225,21 @@ const rpcToArgs: Record<
   set_gradient_fill: (nodeIds, params) => ({ ...params, nodeId: nodeIds?.[0] }),
   set_solid_fill: (nodeIds, params) => ({ ...params, nodeId: nodeIds?.[0] }),
   set_solid_fills: (_nodeIds, params) => ({ ...params }),
+  create_variable_collection: (_nodeIds, params) => ({ ...params }),
+  create_variable_mode: (_nodeIds, params) => ({ ...params }),
+  rename_variable_mode: (_nodeIds, params) => ({ ...params }),
+  delete_variable_mode: (_nodeIds, params) => ({ ...params }),
+  create_variables: (_nodeIds, params) => ({ ...params }),
+  create_variable_alias: (_nodeIds, params) => ({ ...params }),
+  set_variable_bindings: (_nodeIds, params) => ({ ...params }),
+  get_variable_bindings: (nodeIds, params) => ({
+    ...params,
+    nodeId: nodeIds?.[0],
+  }),
+  remove_variable_binding: (nodeIds, params) => ({
+    ...params,
+    nodeId: nodeIds?.[0],
+  }),
   set_effects: (nodeIds, params) => ({ ...params, nodeId: nodeIds?.[0] }),
   set_stroke_properties: (nodeIds, params) => ({
     ...params,

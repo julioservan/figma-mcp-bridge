@@ -309,6 +309,171 @@ export function registerTools(
   );
 
   server.tool(
+    "create_variable_collection",
+    "Create a variable collection (a design-token set) and optionally name its modes. Figma always creates one mode, so ['Light','Dark'] renames that first mode and adds the second. Returns the collectionId and every modeId. When multiple files are connected, specify fileKey.",
+    toolInputSchemas.create_variable_collection.shape,
+    async (args): Promise<ToolResult> => {
+      const parsed = parseToolInput(
+        toolInputSchemas.create_variable_collection,
+        args
+      );
+      if (!parsed.success) return parsed.error;
+      const { fileKey, ...params } = parsed.data;
+      return renderResponse(() =>
+        node.sendWithParams(
+          "create_variable_collection",
+          undefined,
+          params,
+          fileKey
+        )
+      );
+    }
+  );
+
+  server.tool(
+    "create_variable_mode",
+    "Add a mode to an existing variable collection — this is how a theme such as 'Dark' is added to a token set. Returns the new modeId. Figma's pricing tier caps modes per collection. When multiple files are connected, specify fileKey.",
+    toolInputSchemas.create_variable_mode.shape,
+    async (args): Promise<ToolResult> => {
+      const parsed = parseToolInput(
+        toolInputSchemas.create_variable_mode,
+        args
+      );
+      if (!parsed.success) return parsed.error;
+      const { fileKey, ...params } = parsed.data;
+      return renderResponse(() =>
+        node.sendWithParams("create_variable_mode", undefined, params, fileKey)
+      );
+    }
+  );
+
+  server.tool(
+    "rename_variable_mode",
+    "Rename an existing mode in a variable collection. When multiple files are connected, specify fileKey.",
+    toolInputSchemas.rename_variable_mode.shape,
+    async (args): Promise<ToolResult> => {
+      const parsed = parseToolInput(
+        toolInputSchemas.rename_variable_mode,
+        args
+      );
+      if (!parsed.success) return parsed.error;
+      const { fileKey, ...params } = parsed.data;
+      return renderResponse(() =>
+        node.sendWithParams("rename_variable_mode", undefined, params, fileKey)
+      );
+    }
+  );
+
+  server.tool(
+    "delete_variable_mode",
+    "Remove a mode from a variable collection, discarding every variable value defined for it. Gated behind confirm: true. A collection must keep at least one mode. When multiple files are connected, specify fileKey.",
+    toolInputSchemas.delete_variable_mode.shape,
+    async (args): Promise<ToolResult> => {
+      const parsed = parseToolInput(
+        toolInputSchemas.delete_variable_mode,
+        args
+      );
+      if (!parsed.success) return parsed.error;
+      const { fileKey, ...params } = parsed.data;
+      return renderResponse(() =>
+        node.sendWithParams("delete_variable_mode", undefined, params, fileKey)
+      );
+    }
+  );
+
+  server.tool(
+    "create_variables",
+    "Create design tokens in a collection. resolvedType is fixed at creation and cannot be changed later; pass values keyed by modeId to set each token's per-mode value — hex strings for COLOR, numbers for FLOAT. Items are independent: a failing entry is reported in results and does not abort the rest. When multiple files are connected, specify fileKey.",
+    toolInputSchemas.create_variables.shape,
+    async (args): Promise<ToolResult> => {
+      const parsed = parseToolInput(toolInputSchemas.create_variables, args);
+      if (!parsed.success) return parsed.error;
+      const { fileKey, ...params } = parsed.data;
+      return renderResponse(() =>
+        node.sendWithParams("create_variables", undefined, params, fileKey)
+      );
+    }
+  );
+
+  server.tool(
+    "create_variable_alias",
+    "Point one variable at another for a given mode — the basis of a semantic token layer, e.g. making 'interactive/default' resolve to 'palette/teal-600'. Both variables must share the same resolvedType. When multiple files are connected, specify fileKey.",
+    toolInputSchemas.create_variable_alias.shape,
+    async (args): Promise<ToolResult> => {
+      const parsed = parseToolInput(
+        toolInputSchemas.create_variable_alias,
+        args
+      );
+      if (!parsed.success) return parsed.error;
+      const { fileKey, ...params } = parsed.data;
+      return renderResponse(() =>
+        node.sendWithParams("create_variable_alias", undefined, params, fileKey)
+      );
+    }
+  );
+
+  server.tool(
+    "set_variable_bindings",
+    "Bind variables to node properties so the nodes follow the token instead of holding a dead value. Use 'fill'/'stroke' to bind a paint's colour (index picks which paint), or a numeric field such as cornerRadius, paddingTop, itemSpacing, opacity or strokeWeight. Binding is what makes a node respond to a mode switch. When multiple files are connected, specify fileKey.",
+    toolInputSchemas.set_variable_bindings.shape,
+    async (args): Promise<ToolResult> => {
+      const parsed = parseToolInput(
+        toolInputSchemas.set_variable_bindings,
+        args
+      );
+      if (!parsed.success) return parsed.error;
+      const { items, fileKey } = parsed.data;
+      return renderResponse(() =>
+        node.sendWithParams(
+          "set_variable_bindings",
+          undefined,
+          { items },
+          fileKey
+        )
+      );
+    }
+  );
+
+  server.tool(
+    "get_variable_bindings",
+    "Read every variable bound to a node, resolved to variable names as well as IDs. Use it to audit which tokens a component consumes and to verify a theming pass landed. When multiple files are connected, specify fileKey.",
+    toolInputSchemas.get_variable_bindings.shape,
+    async (args): Promise<ToolResult> => {
+      const parsed = parseToolInput(
+        toolInputSchemas.get_variable_bindings,
+        args
+      );
+      if (!parsed.success) return parsed.error;
+      const { nodeId, fileKey } = parsed.data;
+      return renderResponse(() =>
+        node.send("get_variable_bindings", [nodeId], fileKey)
+      );
+    }
+  );
+
+  server.tool(
+    "remove_variable_binding",
+    "Unbind a variable from a node property, leaving the property at its current concrete value. When multiple files are connected, specify fileKey.",
+    toolInputSchemas.remove_variable_binding.shape,
+    async (args): Promise<ToolResult> => {
+      const parsed = parseToolInput(
+        toolInputSchemas.remove_variable_binding,
+        args
+      );
+      if (!parsed.success) return parsed.error;
+      const { nodeId, fileKey, ...params } = parsed.data;
+      return renderResponse(() =>
+        node.sendWithParams(
+          "remove_variable_binding",
+          [nodeId],
+          params,
+          fileKey
+        )
+      );
+    }
+  );
+
+  server.tool(
     "set_gradient_fill",
     "Replace a node's fill (or stroke) with a gradient paint. Provide ordered stops (position 0..1, hex color, optional alpha) and an optional 2x3 gradientTransform matching Figma's gradientTransform format. Useful for setting linear/radial/angular/diamond gradients programmatically.",
     setGradientFillInput.shape,
